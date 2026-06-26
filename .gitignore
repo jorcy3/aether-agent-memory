@@ -35,3 +35,15 @@ coverage.xml
 # OS
 .DS_Store
 Thumbs.db
+
+# AGENTS
+opencode.json
+.agent/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.claude
+.codex
+.cursor
+
+docs/superpowers
