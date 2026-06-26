@@ -30,7 +30,7 @@ class MockEpisodicMemoryManager(BaseMockMemoryManager):
         candidates = [
             m
             for m in self._store.values()
-            if m.session_id == request.session_id
+            if m.agent_id == request.agent_id
             and m.state in (MemoryState.ACTIVE, MemoryState.ARCHIVED)
         ]
         scored: list[tuple[float, RecalledMemory]] = []

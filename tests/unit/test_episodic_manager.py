@@ -88,7 +88,7 @@ async def test_recall_decay_lowers_old_memory_score() -> None:
 
 
 @pytest.mark.unit
-async def test_recall_filters_by_session_and_excludes_expired() -> None:
+async def test_recall_cross_session_and_excludes_expired() -> None:
     embedder = MockEmbeddingClient(dim=16)
     mgr = MockEpisodicMemoryManager(embedder=embedder)
     await mgr.write(Memory(type=MemoryType.EPISODIC, session_id="s1", agent_id="a1", content="a"))
@@ -102,10 +102,13 @@ async def test_recall_filters_by_session_and_excludes_expired() -> None:
         )
     )
     await mgr.write(Memory(type=MemoryType.EPISODIC, session_id="s2", agent_id="a1", content="a"))
-    req = ContextRequest(session_id="s1", agent_id="a1", query="a")
+    req = ContextRequest(session_id="s3", agent_id="a1", query="a")
     recalled = await mgr.recall(req)
-    assert all(r.memory.session_id == "s1" for r in recalled)
+    assert all(r.memory.agent_id == "a1" for r in recalled)
     assert all(r.memory.state != MemoryState.EXPIRED for r in recalled)
+    sessions = {r.memory.session_id for r in recalled}
+    assert "s2" in sessions
+    assert "s1" in sessions
 
 
 @pytest.mark.unit
