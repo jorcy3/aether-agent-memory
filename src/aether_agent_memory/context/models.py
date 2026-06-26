@@ -1,0 +1,30 @@
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from aether_agent_memory.core.enums import MemoryType
+from aether_agent_memory.core.memory import Memory
+
+
+class ContextRequest(BaseModel):
+    session_id: str
+    agent_id: str
+    user_id: str | None = None
+    query: str
+    memory_types: list[MemoryType] = Field(
+        default_factory=lambda: [MemoryType.WORKING, MemoryType.EPISODIC, MemoryType.SEMANTIC]
+    )
+    max_tokens: int = 4096
+    max_candidates: int = 100
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextPack(BaseModel):
+    request: ContextRequest
+    memories: list[Memory]
+    total_tokens: int
+    budget_tokens: int
+    recall_scores: dict[str, float]
+    assembled_text: str
+    built_at: datetime
