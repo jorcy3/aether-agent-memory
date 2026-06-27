@@ -62,16 +62,20 @@ class B2DemoApp(App[None]):
         border: round $primary;
         padding: 0 1;
         background: $surface;
+        overflow: hidden hidden;
     }
     #system-pane {
         width: 3fr;
         border: round $accent;
         padding: 0 1;
         background: $surface;
+        overflow: hidden hidden;
     }
     #user-pane RichLog, #system-pane RichLog {
         height: 1fr;
         scrollbar-size: 1 1;
+        overflow-x: hidden;
+        overflow-y: auto;
     }
     #status-bar {
         height: 3;
@@ -85,10 +89,15 @@ class B2DemoApp(App[None]):
 
     stage: reactive[str] = reactive("准备中")
 
-    def __init__(self) -> None:
+    def __init__(self, step_delay: float = 1.0) -> None:
         super().__init__()
         self.env = DemoEnv()
         self._advance: asyncio.Event = asyncio.Event()
+        self.step_delay = step_delay
+
+    async def _step(self) -> None:
+        if self.step_delay > 0:
+            await asyncio.sleep(self.step_delay)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -122,12 +131,16 @@ class B2DemoApp(App[None]):
     def user_write(self, text: str, *, who: str = "user") -> None:
         label = "用户" if who == "user" else "Agent"
         color = "bold cyan" if who == "user" else "bold green"
+        avail = self.user_log().size.width
+        body = Text(text, no_wrap=False, overflow="fold")
         panel = Panel(
-            Text(text, no_wrap=False),
+            body,
             title=f"[{color}]{label}[/{color}]",
             title_align="left",
             border_style="cyan" if who == "user" else "green",
             padding=(0, 1),
+            width=avail,
+            expand=False,
         )
         self.user_log().write(panel)
 
@@ -180,6 +193,7 @@ class B2DemoApp(App[None]):
         self.set_stage("场景 1 · 多轮对话写入 Working Memory")
         self.system_section("场景 1 · Working Memory 写入")
         self.system_write("[dim]每条用户消息即时写入 DRAM(L0)，P99 < 1ms[/dim]\n")
+        await self._step()
 
         turns = [
             ("这次暴雨过程的降雨量有多大？", ["rainstorm", "rainfall"], "正在查询降雨量数据……"),
@@ -197,6 +211,7 @@ class B2DemoApp(App[None]):
 
         for msg, tags, reply in turns:
             self.user_write(msg, who="user")
+            await self._step()
             mem = Memory(
                 type=MemoryType.WORKING,
                 session_id=SESSION_1,
@@ -211,8 +226,9 @@ class B2DemoApp(App[None]):
                 f"[green]▸[/green] 写入 Working Memory  id={mem.id[:8]}  "
                 f"tags={tags}  ttl={fmt_dt(mem.expires_at)}"
             )
+            await self._step()
             self.user_write(reply, who="agent")
-            await asyncio.sleep(0.2)
+            await self._step()
 
         self.system_write("\n[bold]当前 Working Memory 状态[/bold]（按 session 过滤）：")
         items = await self.env.working.query(session_id=SESSION_1)
@@ -226,11 +242,14 @@ class B2DemoApp(App[None]):
     async def scenario_2(self) -> None:
         self.set_stage("场景 2 · 会话结束 → 异步归档到 Episodic Memory")
         self.user_write("（会话结束）", who="user")
+        await self._step()
         self.user_write("本次会话已归档，谢谢使用。", who="agent")
+        await self._step()
 
         self.system_section("场景 2 · 归档到 Episodic Memory")
         working_items = await self.env.working.query(session_id=SESSION_1)
         self.system_write(f"归档前 Working={len(working_items)}  Episodic=0\n")
+        await self._step()
 
         archived: list[Memory] = []
         for m in working_items:
@@ -256,9 +275,10 @@ class B2DemoApp(App[None]):
                 f"episodic {ep.id[:8]}  "
                 f"embedding dim={len(ep.embedding or [])}  tier={ref.tier.value}"
             )
-            await asyncio.sleep(0.15)
+            await self._step()
 
         self.system_write(f"\n归档后 Working=0（清空）  Episodic={len(archived)}\n")
+        await self._step()
         self.system_write("[bold]Episodic Memory 详情[/bold]（embedding + P2 关联）：")
         self.system_write(
             _make_table(
@@ -272,6 +292,7 @@ class B2DemoApp(App[None]):
         self.user_write(
             "开始新会话。上次提到的暴雨过程，降水量预报是多少？要不要发预警？", who="user"
         )
+        await self._step()
 
         self.system_section("场景 3 · Context Pack 构建")
         semantic_fact = Memory(
@@ -284,6 +305,7 @@ class B2DemoApp(App[None]):
         )
         await self.env.semantic.write(semantic_fact)
         self.system_write(f"预置 Semantic 知识：{semantic_fact.content}\n")
+        await self._step()
 
         request = ContextRequest(
             session_id=SESSION_2,
@@ -300,11 +322,13 @@ class B2DemoApp(App[None]):
             f"  types={[t.value for t in request.memory_types]}  "
             f"max_tokens={request.max_tokens}\n"
         )
+        await self._step()
 
         pack = await self.env.builder.build(request)
         epi_hits = await self.env.episodic.recall(request)
         sem_hits = await self.env.semantic.recall(request)
         self.system_write(f"召回候选：Episodic={len(epi_hits)}  Semantic={len(sem_hits)}\n")
+        await self._step()
         self.system_write("Episodic 召回（cosine × 衰减，归一化 0.5~0.95）：")
         self.system_write(
             _make_table(
@@ -319,6 +343,7 @@ class B2DemoApp(App[None]):
                 ],
             )
         )
+        await self._step()
         self.system_write("Semantic 召回（cosine，无衰减）：")
         self.system_write(
             _make_table(
@@ -333,6 +358,7 @@ class B2DemoApp(App[None]):
                 ],
             )
         )
+        await self._step()
 
         self.system_write(
             f"\n[bold]Context Pack[/bold]  入选={len(pack.memories)}  "
@@ -353,9 +379,11 @@ class B2DemoApp(App[None]):
                 ],
             )
         )
+        await self._step()
         self.system_write("[bold]assembled_text（返回给 Agent）[/bold]：")
         for line in pack.assembled_text.split("\n"):
             self.system_write(f"  {line}")
+        await self._step()
 
         self.user_write(
             "根据历史会话，上次暴雨过程 24h 累计约 85mm，已达暴雨标准；"
@@ -366,7 +394,9 @@ class B2DemoApp(App[None]):
     async def scenario_4(self) -> None:
         self.set_stage("场景 4 · 记忆生命周期事件")
         self.user_write("（系统侧生命周期演示）", who="user")
+        await self._step()
         self.user_write("将演示 TTL 过期、信息纠正替代、遗忘衰减。", who="agent")
+        await self._step()
 
         self.system_section("4-A · TTL 到期过期")
         short = Memory(
@@ -380,6 +410,7 @@ class B2DemoApp(App[None]):
         self.system_write(
             f"写入 {short.id[:8]}  state={short.state.value}  expires_at={fmt_dt(short.expires_at)}"
         )
+        await self._step()
         future = datetime.now(UTC) + timedelta(hours=2)
         expired_n = await self.env.working.expire_stale(now=future)
         after = await self.env.working.get(short.id)
@@ -387,9 +418,11 @@ class B2DemoApp(App[None]):
             f"时间前进 2h → expire_stale() 过期 {expired_n} 条  "
             f"state=[red]{after.state.value if after else '—'}[/red]\n"
         )
+        await self._step()
 
         self.system_section("4-B · 用户纠正 → supersede")
         self.user_write("等等，API 限速应该是 1000 次每分钟，不是 100。", who="user")
+        await self._step()
         old_fact = Memory(
             type=MemoryType.SEMANTIC,
             session_id="sess-supersede",
@@ -425,7 +458,9 @@ class B2DemoApp(App[None]):
                 ],
             )
         )
+        await self._step()
         self.user_write("已更新，谢谢纠正。", who="agent")
+        await self._step()
 
         self.system_section("4-C · Ebbinghaus 遗忘曲线衰减")
         sample = Memory(
@@ -452,6 +487,7 @@ class B2DemoApp(App[None]):
     async def scenario_5(self) -> None:
         self.set_stage("场景 5 · Memory Signal 输出")
         self.user_write("（Agent 召回了一条历史记忆）", who="user")
+        await self._step()
 
         self.system_section("场景 5 · Memory Signal → B3")
         target = await self.env.episodic.query(session_id=SESSION_1, limit=1)
@@ -479,6 +515,7 @@ class B2DemoApp(App[None]):
             },
         )
         await self.env.emitter.emit(signal)
+        await self._step()
 
         self.system_write("[bold]MemorySignal 结构[/bold]（B3 收到）：")
         sig_lines = [
@@ -491,6 +528,7 @@ class B2DemoApp(App[None]):
             f"  timestamp     {fmt_dt(signal.timestamp)}",
         ]
         self.system_write("\n".join(sig_lines))
+        await self._step()
         self.system_write("\n[bold]metadata[/bold]（B3 调度上下文）：")
         meta_lines = [
             f"    importance             {signal.metadata['importance']}",
@@ -501,12 +539,14 @@ class B2DemoApp(App[None]):
             f"    tags                   {signal.metadata['tags']}",
         ]
         self.system_write("\n".join(meta_lines))
+        await self._step()
         self.system_write(f"\n已发射，累计信号数：[bold]{len(self.env.emitter.signals)}[/bold]")
 
     async def summary(self) -> None:
         self.set_stage("演示总结")
         self.user_log().clear()
         self.user_write("演示结束。以上为 B2 Agent 记忆管理器的核心能力。", who="agent")
+        await self._step()
         self.system_section("演示总结 · B2 已展示的能力")
         caps = [
             ("三层记忆模型", "Working(DRAM)/Episodic(NVMe)/Semantic 三层统一管理"),
