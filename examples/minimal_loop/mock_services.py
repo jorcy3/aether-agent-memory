@@ -3,11 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
 from aether_agent_memory import (
+    Memory,
     MockContextPackBuilder,
     MockEmbeddingClient,
     MockEpisodicMemoryManager,
@@ -18,8 +15,6 @@ from aether_agent_memory import (
     Settings,
     StorageTier,
 )
-
-console = Console()
 
 SCORE_FLOOR = 0.5
 SCORE_CEIL = 0.95
@@ -53,32 +48,33 @@ def fmt_embedding(emb: object, shown: int = 3) -> str:
     return f"[{head}{more}]  dim={len(vals)}"
 
 
-def make_table(
-    headers: list[str],
-    rows: list[list[str]],
-    *,
-    title: str | None = None,
-) -> Table:
-    table = Table(title=title, show_lines=False, expand=True, pad_edge=False)
-    for h in headers:
-        table.add_column(h, overflow="fold", no_wrap=False)
-    for row in rows:
-        table.add_row(*[str(cell) for cell in row])
-    return table
+def memory_table_rows(memories: list[Memory]) -> list[list[str]]:
+    return [
+        [
+            m.id[:8],
+            m.type.value,
+            m.state.value,
+            truncate(m.content, 30),
+            m.source.value,
+            str(m.access_count),
+            fmt_dt(m.expires_at),
+        ]
+        for m in memories
+    ]
 
 
-def make_panel(title: str, subtitle: str = "") -> Panel:
-    body = f"[bold cyan]{title}[/bold cyan]"
-    if subtitle:
-        body += f"\n[dim]{subtitle}[/dim]"
-    return Panel(body, border_style="cyan", expand=True, padding=(0, 2))
-
-
-def print_kv(pairs: list[tuple[str, object]], *, indent: int = 2) -> None:
-    pad_left = " " * indent
-    key_w = max((len(str(k)) for k, _ in pairs), default=0)
-    for key, value in pairs:
-        console.print(f"{pad_left}[bold]{str(key).ljust(key_w)}[/bold]  {value}")
+def episodic_detail_rows(memories: list[Memory]) -> list[list[str]]:
+    return [
+        [
+            m.id[:8],
+            m.state.value,
+            truncate(m.content, 28),
+            fmt_embedding(m.embedding),
+            m.p2_ref.object_key if m.p2_ref else "—",
+            m.p2_ref.tier.value if m.p2_ref else "—",
+        ]
+        for m in memories
+    ]
 
 
 @dataclass
