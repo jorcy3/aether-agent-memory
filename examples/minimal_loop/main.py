@@ -3,6 +3,13 @@ from __future__ import annotations
 import argparse
 import sys
 from importlib.util import find_spec
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_PATH = PROJECT_ROOT / "src"
+
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
 if find_spec("textual") is None:
     sys.stderr.write(
@@ -14,12 +21,12 @@ if find_spec("textual") is None:
     )
     raise SystemExit(1)
 
-from tui_app import B2DemoApp
+from tui_app import P3DataflowApp
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="B2 Agent 记忆管理器 · 分屏交互式 TUI 演示",
+        description="P3 数据流框架分屏交互式 TUI 演示",
     )
     parser.add_argument(
         "--step-delay",
@@ -33,5 +40,5 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    app = B2DemoApp(step_delay=args.step_delay)
+    app = P3DataflowApp(step_delay=args.step_delay)
     app.run()
