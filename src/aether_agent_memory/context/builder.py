@@ -39,12 +39,17 @@ class MockContextPackBuilder:
         candidates = merged[: request.max_candidates]
 
         selected: list[RecalledMemory] = []
+        seen_content: set[str] = set()
         total_tokens = 0
         for rm in candidates:
+            content_key = " ".join(rm.memory.content.split()).casefold()
+            if content_key in seen_content:
+                continue
             tokens = _estimate_tokens(rm.memory.content)
             if total_tokens + tokens > request.max_tokens:
                 continue
             selected.append(rm)
+            seen_content.add(content_key)
             total_tokens += tokens
 
         recall_scores = {rm.memory.id: rm.score for rm in selected}
@@ -53,6 +58,16 @@ class MockContextPackBuilder:
             for i, rm in enumerate(selected)
         ]
         assembled_text = "\n".join(lines)
+        memory_refs = [rm.memory.id for rm in selected]
+        evidence_refs: list[str] = []
+        for rm in selected:
+            if rm.memory.p2_ref is not None:
+                evidence_refs.append(rm.memory.p2_ref.object_key)
+            metadata_refs = rm.memory.metadata.get("evidence_refs", [])
+            if isinstance(metadata_refs, list):
+                evidence_refs.extend(str(ref) for ref in metadata_refs)
+        evidence_refs = list(dict.fromkeys(evidence_refs))
+        summary = "\n".join(rm.memory.content for rm in selected[:3])[:1000]
 
         return ContextPack(
             request=request,
@@ -62,4 +77,13 @@ class MockContextPackBuilder:
             recall_scores=recall_scores,
             assembled_text=assembled_text,
             built_at=datetime.now(UTC),
+            summary=summary,
+            memory_refs=memory_refs,
+            evidence_refs=evidence_refs,
+            budget_info={
+                "used_tokens": total_tokens,
+                "budget_tokens": request.max_tokens,
+                "remaining_tokens": max(request.max_tokens - total_tokens, 0),
+            },
+            trace_id=request.trace_id,
         )

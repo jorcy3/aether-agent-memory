@@ -11,6 +11,10 @@ class ContextRequest(BaseModel):
     session_id: str
     agent_id: str
     user_id: str | None = None
+    tenant_id: str | None = None
+    task_id: str | None = None
+    request_id: str | None = None
+    trace_id: str | None = None
     query: str
     memory_types: list[MemoryType] = Field(
         default_factory=lambda: [MemoryType.WORKING, MemoryType.EPISODIC, MemoryType.SEMANTIC]
@@ -28,3 +32,9 @@ class ContextPack(BaseModel):
     recall_scores: dict[str, float]
     assembled_text: str
     built_at: datetime
+    summary: str = ""
+    memory_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    budget_info: dict[str, int] = Field(default_factory=dict)
+    status: str = "ok"
+    trace_id: str | None = None

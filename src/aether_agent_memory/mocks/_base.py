@@ -5,8 +5,10 @@ from aether_agent_memory.context.models import ContextRequest
 from aether_agent_memory.core.enums import MemoryState
 from aether_agent_memory.core.exceptions import MemoryNotFoundError
 from aether_agent_memory.core.memory import Memory, RecalledMemory
+from aether_agent_memory.interfaces.memory_store import MemoryStore
 from aether_agent_memory.lifecycle.decay import is_ttl_expired
 from aether_agent_memory.lifecycle.state import transition
+from aether_agent_memory.persistence.memory_store import InMemoryMemoryStore
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -21,20 +23,25 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 class BaseMockMemoryManager:
-    def __init__(self, default_ttl: timedelta | None = None) -> None:
-        self._store: dict[str, Memory] = {}
+    def __init__(
+        self,
+        default_ttl: timedelta | None = None,
+        store: MemoryStore | None = None,
+    ) -> None:
+        self._store = store or InMemoryMemoryStore()
         self._default_ttl = default_ttl
 
     async def write(self, memory: Memory) -> Memory:
         if memory.expires_at is None and self._default_ttl is not None:
             memory.expires_at = datetime.now(UTC) + self._default_ttl
-        self._store[memory.id] = memory
+        await self._store.upsert(memory)
         return memory
 
     async def get(self, memory_id: str) -> Memory | None:
-        m = self._store.get(memory_id)
+        m = await self._store.get(memory_id)
         if m is not None:
             m.touch()
+            await self._store.upsert(m)
         return m
 
     async def query(
@@ -43,17 +50,20 @@ class BaseMockMemoryManager:
         session_id: str | None = None,
         agent_id: str | None = None,
         user_id: str | None = None,
+        tenant_id: str | None = None,
         state: MemoryState | None = None,
         tags: list[str] | None = None,
         limit: int = 100,
     ) -> list[Memory]:
         results: list[Memory] = []
-        for m in self._store.values():
+        for m in await self._store.list():
             if session_id is not None and m.session_id != session_id:
                 continue
             if agent_id is not None and m.agent_id != agent_id:
                 continue
             if user_id is not None and m.user_id != user_id:
+                continue
+            if tenant_id is not None and m.tenant_id != tenant_id:
                 continue
             if state is not None and m.state != state:
                 continue
@@ -63,26 +73,39 @@ class BaseMockMemoryManager:
         return results[:limit]
 
     async def update_state(self, memory_id: str, new_state: MemoryState) -> Memory:
-        m = self._store.get(memory_id)
+        m = await self._store.get(memory_id)
         if m is None:
             raise MemoryNotFoundError(memory_id)
         transition(m.state, new_state)
         m.state = new_state
         m.updated_at = datetime.now(UTC)
+        await self._store.upsert(m)
         return m
 
     async def delete(self, memory_id: str) -> bool:
-        return self._store.pop(memory_id, None) is not None
+        return await self._store.delete(memory_id)
 
     async def expire_stale(self, now: datetime | None = None) -> int:
         current = now or datetime.now(UTC)
         count = 0
-        for m in self._store.values():
+        for m in await self._store.list():
             if m.state == MemoryState.ACTIVE and is_ttl_expired(m, now=current):
                 m.state = MemoryState.EXPIRED
                 m.updated_at = current
+                await self._store.upsert(m)
                 count += 1
         return count
 
+    async def _all(self) -> list[Memory]:
+        return await self._store.list()
+
     async def recall(self, request: ContextRequest) -> list[RecalledMemory]:
         raise NotImplementedError
+
+    @staticmethod
+    def _matches_scope(memory: Memory, request: ContextRequest) -> bool:
+        if memory.agent_id != request.agent_id:
+            return False
+        if request.user_id is not None and memory.user_id != request.user_id:
+            return False
+        return request.tenant_id is None or memory.tenant_id == request.tenant_id

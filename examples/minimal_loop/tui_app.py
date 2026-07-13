@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from typing import Any
 
 from mock_services import (
@@ -22,12 +21,19 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Header, RichLog, Static
 
 from aether_agent_memory import (
+    AccessStats,
+    ActionLogEntry,
     ContextRequest,
+    EmbeddingRequest,
     Memory,
     MemorySignal,
     MemoryType,
+    SchedulableObject,
+    ScheduleRequest,
+    SemanticSignals,
     SignalType,
     SourceType,
+    StorageTier,
 )
 
 AGENT_ID = "agent-duty-01"
@@ -170,6 +176,44 @@ class P3DataflowApp(App[None]):
         style = styles.get(module, "bold white")
         self.system_write(f"[{style}]{module}[/{style}] {message}")
 
+    async def schedule_memory(
+        self,
+        memory: Memory,
+        *,
+        access_frequency: float,
+        recency_score: float,
+        hit_rate: float,
+        semantic_relevance: float,
+        task_relevance: float,
+        business_priority: float,
+        pinned: bool = False,
+    ) -> ActionLogEntry:
+        current_tier = memory.p2_ref.tier if memory.p2_ref else StorageTier.L2_HDD
+        obj = SchedulableObject(
+            object_id=memory.object_id or memory.id,
+            object_type=memory.type.value,
+            current_tier=current_tier,
+            tenant_id=memory.tenant_id,
+            access=AccessStats(
+                access_frequency=access_frequency,
+                recency_score=recency_score,
+                hit_rate=hit_rate,
+                access_count=memory.access_count,
+                last_access_time=memory.last_accessed_at,
+            ),
+            semantic=SemanticSignals(
+                semantic_relevance=semantic_relevance,
+                importance=memory.importance,
+                task_relevance=task_relevance,
+            ),
+            business_priority=business_priority,
+            pinned=pinned,
+        )
+        result = await self.env.b3_scheduler.run_once(
+            ScheduleRequest(objects=[obj], trace_id=memory.trace_id or memory.id)
+        )
+        return result.entries[0]
+
     async def wait_for_enter(self, hint: str) -> None:
         bar = self.query_one("#status-bar", Static)
         bar.update(f"[bold cyan]{self.stage}[/bold cyan]    [yellow]{hint}[/yellow]")
@@ -207,7 +251,9 @@ class P3DataflowApp(App[None]):
         self.set_stage("场景 1 · 上传手册 → B1 语义化 → B2 记忆化 → B3 保温")
         self.system_section("场景 1 · 文档入库到长期知识")
 
-        self.user_write("我刚上传了《汛期值班手册》，后面问到暴雨响应请按这份手册回答。", who="user")
+        self.user_write(
+            "我刚上传了《汛期值班手册》，后面问到暴雨响应请按这份手册回答。", who="user"
+        )
         await self._step()
         self.user_write("已接收手册，我先解析条款并纳入长期知识。", who="agent")
         await self._step()
@@ -224,18 +270,28 @@ class P3DataflowApp(App[None]):
         chunk_rows: list[list[str]] = []
         for index, chunk in enumerate(chunks, start=1):
             chunk_id = f"chunk-manual-{index:03d}"
-            vector = await self.env.embedder.embed_one(chunk)
+            embedding_result = await self.env.b1_pipeline.process(
+                EmbeddingRequest(
+                    text=chunk,
+                    source_type=SourceType.DOCUMENT,
+                    source_id=MANUAL_SOURCE_ID,
+                    object_id=chunk_id,
+                    metadata={"chunk_id": chunk_id},
+                )
+            )
+            if not embedding_result.records:
+                raise RuntimeError(embedding_result.error_message or "B1 embedding failed")
+            vector = embedding_result.records[0].vector
             ref = await self.env.storage.put(f"manual/{chunk_id}", chunk.encode("utf-8"))
             chunk_rows.append([chunk_id, truncate(chunk, 24), len(vector), ref.object_key])
             self.module_log(
                 "B1",
-                f"切分 {chunk_id}，绑定 source_id/object_key，生成 embedding dim={len(vector)}，写入 P2-E1 / {ref.object_key}",
+                f"切分 {chunk_id}，绑定 source_id/object_key，"
+                f"生成 embedding dim={len(vector)}，写入 P2-E1 / {ref.object_key}",
             )
             await self._step()
 
-        self.system_write(
-            _make_table(["chunk_id", "内容", "dim", "P2 object_key"], chunk_rows)
-        )
+        self.system_write(_make_table(["chunk_id", "内容", "dim", "P2 object_key"], chunk_rows))
         await self._step()
 
         semantic_items: list[Memory] = []
@@ -252,7 +308,10 @@ class P3DataflowApp(App[None]):
             )
             await self.env.semantic.write(mem)
             semantic_items.append(mem)
-            self.module_log("B2", f"接收 B1 返回的 chunk/source/embedding_ref，沉淀 Semantic Memory id={mem.id[:8]}")
+            self.module_log(
+                "B2",
+                f"接收 B1 返回的 chunk/source/embedding_ref，沉淀 Semantic Memory id={mem.id[:8]}",
+            )
             await self._step()
 
         upload_event = Memory(
@@ -266,16 +325,41 @@ class P3DataflowApp(App[None]):
             metadata={"source_id": MANUAL_SOURCE_ID},
         )
         await self.env.episodic.write(upload_event)
-        self.module_log("B2", f"写入 Episodic Memory id={upload_event.id[:8]}，保留上传事件轨迹与来源追溯")
+        self.module_log(
+            "B2", f"写入 Episodic Memory id={upload_event.id[:8]}，保留上传事件轨迹与来源追溯"
+        )
         await self._step()
 
-        self.module_log("B2", "输出 memory signal：authoritative=true / user_defined=true / source_type=document")
+        self.module_log(
+            "B2",
+            "输出 memory signal：authoritative=true / user_defined=true / source_type=document",
+        )
         await self._step()
-        self.module_log("B3", "读取 B2 的 memory signal，并结合对象状态，判断该手册属于高价值长期知识")
+        entry = await self.schedule_memory(
+            semantic_items[0],
+            access_frequency=0.9,
+            recency_score=1.0,
+            hit_rate=0.9,
+            semantic_relevance=1.0,
+            task_relevance=0.9,
+            business_priority=1.0,
+            pinned=True,
+        )
+        self.module_log(
+            "B3",
+            f"V1 Heuristic 计算 score={entry.action.score:.3f}，"
+            f"policy={entry.action.policy_version}",
+        )
         await self._step()
-        self.module_log("B3", "输出 Pin / Keep 建议：手册规则保留在 L1，避免后续被冷降级")
+        self.module_log(
+            "B3",
+            f"输出 {entry.action.action_type.value.upper()} 建议：{entry.action.expected_effect}",
+        )
         await self._step()
-        self.module_log("B2", "接收调度结果并落账：后续召回该手册规则时优先使用当前热层副本")
+        self.module_log(
+            "B2",
+            f"接收执行反馈 status={entry.feedback.execute_status.value}，写入 action_log",
+        )
         await self._step()
 
         self.system_write("\n[bold]当前 Semantic Memory[/bold]")
@@ -326,7 +410,9 @@ class P3DataflowApp(App[None]):
         await self._step()
         self.module_log("B1", "接收工具结果摘要，执行向量化，供后续任务复盘与跨会话检索")
         await self._step()
-        tool_ref = await self.env.storage.put("tool/west-city-rainfall", tool_summary.encode("utf-8"))
+        tool_ref = await self.env.storage.put(
+            "tool/west-city-rainfall", tool_summary.encode("utf-8")
+        )
         tool_memory = Memory(
             type=MemoryType.EPISODIC,
             session_id=SESSION_1,
@@ -338,7 +424,9 @@ class P3DataflowApp(App[None]):
             p2_ref=tool_ref,
         )
         await self.env.episodic.write(tool_memory)
-        self.module_log("B2", f"接收 B1 的 embedding 结果，归档为 Episodic Memory id={tool_memory.id[:8]}")
+        self.module_log(
+            "B2", f"接收 B1 的 embedding 结果，归档为 Episodic Memory id={tool_memory.id[:8]}"
+        )
         await self._step()
 
         working_items = await self.env.working.query(session_id=SESSION_1)
@@ -356,7 +444,9 @@ class P3DataflowApp(App[None]):
                 metadata={"archived_from": item.id},
                 p2_ref=ref,
             )
-            self.module_log("B2", f"会话阶段结束，准备把 Working Memory {item.id[:8]} 迁入 Episodic")
+            self.module_log(
+                "B2", f"会话阶段结束，准备把 Working Memory {item.id[:8]} 迁入 Episodic"
+            )
             await self._step()
             self.module_log("B1", f"收到归档请求，对 memory={item.id[:8]} 生成向量表示并绑定来源")
             await self._step()
@@ -378,11 +468,31 @@ class P3DataflowApp(App[None]):
         await self.env.emitter.emit(hot_signal)
         self.module_log("B2", f"输出 MemorySignal id={tool_memory.id[:8]}，heat={hot_signal.heat}")
         await self._step()
-        self.module_log("B3", "读取 memory signal，并结合对象访问热度和当前对象层级状态做 Heuristic 判断")
+        entry = await self.schedule_memory(
+            tool_memory,
+            access_frequency=0.95,
+            recency_score=0.95,
+            hit_rate=0.9,
+            semantic_relevance=0.85,
+            task_relevance=0.8,
+            business_priority=0.9,
+        )
+        self.module_log(
+            "B3",
+            f"V1 Heuristic 计算 score={entry.action.score:.3f}，reason={entry.action.reason}",
+        )
         await self._step()
-        self.module_log("B3", "输出 Promote 建议：高复用工具证据继续保留在热层，供后续任务直接命中")
+        self.module_log(
+            "B3",
+            f"输出 {entry.action.action_type.value.upper()} → "
+            f"{entry.action.target_tier.value if entry.action.target_tier else '—'}",
+        )
         await self._step()
-        self.module_log("B2", "接收 Promote 建议并回写优先级：后续构建 Context Pack 时提高该证据排序")
+        self.module_log(
+            "B2",
+            f"执行反馈 status={entry.feedback.execute_status.value}，"
+            f"new_tier={entry.feedback.new_tier.value if entry.feedback.new_tier else '—'}",
+        )
         await self._step()
 
         self.system_write("\n[bold]当前 Episodic Memory[/bold]")
@@ -420,18 +530,30 @@ class P3DataflowApp(App[None]):
 
         epi_hits = await self.env.episodic.recall(request)
         sem_hits = await self.env.semantic.recall(request)
-        self.module_log("B2", f"通过 P2-E1/P2-E2 返回候选：Episodic={len(epi_hits)}，Semantic={len(sem_hits)}")
+        self.module_log(
+            "B2", f"通过 P2-E1/P2-E2 返回候选：Episodic={len(epi_hits)}，Semantic={len(sem_hits)}"
+        )
         await self._step()
 
         self.system_write(
             _make_table(
                 ["类型", "ID", "内容", "score"],
                 [
-                    ["episodic", hit.memory.id[:8], truncate(hit.memory.content, 28), f"{normalize_score(hit.score):.4f}"]
+                    [
+                        "episodic",
+                        hit.memory.id[:8],
+                        truncate(hit.memory.content, 28),
+                        f"{normalize_score(hit.score):.4f}",
+                    ]
                     for hit in epi_hits[:3]
                 ]
                 + [
-                    ["semantic", hit.memory.id[:8], truncate(hit.memory.content, 28), f"{normalize_score(hit.score):.4f}"]
+                    [
+                        "semantic",
+                        hit.memory.id[:8],
+                        truncate(hit.memory.content, 28),
+                        f"{normalize_score(hit.score):.4f}",
+                    ]
                     for hit in sem_hits[:2]
                 ],
             )
@@ -452,11 +574,29 @@ class P3DataflowApp(App[None]):
             await self.env.emitter.emit(signal)
             self.module_log("B2", f"候选池中命中高热记忆 {top.id[:8]}，向 B3 发出 ACCESS signal")
             await self._step()
-            self.module_log("B3", "读取 ACCESS signal，并结合 Segment/Object 状态判断该批证据是否需要预取或保温")
+            entry = await self.schedule_memory(
+                top,
+                access_frequency=0.8,
+                recency_score=0.9,
+                hit_rate=0.8,
+                semantic_relevance=0.9,
+                task_relevance=0.95,
+                business_priority=0.8,
+            )
+            self.module_log(
+                "B3",
+                f"读取 ACCESS signal，V1 Heuristic score={entry.action.score:.3f}",
+            )
             await self._step()
-            self.module_log("B3", "输出 Keep / Prefetch 建议：保持手册规则在热层，并优先预取上次任务证据")
+            self.module_log(
+                "B3",
+                f"输出 {entry.action.action_type.value.upper()} 建议，"
+                f"target={entry.action.target_tier.value if entry.action.target_tier else '—'}",
+            )
             await self._step()
-            self.module_log("B2", "收到 B3 调度建议后恢复主流程，继续完成 Context Pack 组装与引用排序")
+            self.module_log(
+                "B2", "收到 B3 调度建议后恢复主流程，继续完成 Context Pack 组装与引用排序"
+            )
             await self._step()
 
         pack = await self.env.builder.build(request)
@@ -492,7 +632,10 @@ class P3DataflowApp(App[None]):
         self.set_stage("场景总结 · 三个场景的调度路径与动作命中")
         self.system_section("场景总结 · 模块调度与动作命中")
 
-        self.user_write("三个场景已经演示完，下面汇总每个场景主要调度了哪些模块，以及命中了哪些动作。", who="agent")
+        self.user_write(
+            "三个场景已经演示完，下面汇总每个场景主要调度了哪些模块，以及命中了哪些动作。",
+            who="agent",
+        )
         await self._step()
 
         self.system_write(
@@ -518,7 +661,8 @@ class P3DataflowApp(App[None]):
                     [
                         "场景 3\n新会话召回",
                         "B2 → B1 → B2 → B3 → B2",
-                        "B2：构建 ContextRequest、联合召回 Episodic / Semantic、输出 ACCESS signal\n"
+                        "B2：构建 ContextRequest、联合召回 Episodic / Semantic、"
+                        "输出 ACCESS signal\n"
                         "B1：查询向量化\n"
                         "B3：命中 Keep / Prefetch\n"
                         "B2：恢复主流程，完成 Context Pack 组装与引用排序",

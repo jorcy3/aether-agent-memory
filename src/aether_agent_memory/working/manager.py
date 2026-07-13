@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from aether_agent_memory.context.models import ContextRequest
-from aether_agent_memory.core.enums import MemoryState
+from aether_agent_memory.core.enums import MemoryState, MemoryType
 from aether_agent_memory.core.memory import RecalledMemory
 from aether_agent_memory.mocks._base import BaseMockMemoryManager
 
@@ -11,8 +11,11 @@ class MockWorkingMemoryManager(BaseMockMemoryManager):
         now = datetime.now(UTC)
         candidates = [
             m
-            for m in self._store.values()
-            if m.state == MemoryState.ACTIVE and m.session_id == request.session_id
+            for m in await self._all()
+            if m.type == MemoryType.WORKING
+            and m.state == MemoryState.ACTIVE
+            and m.session_id == request.session_id
+            and self._matches_scope(m, request)
         ]
         scored: list[tuple[float, RecalledMemory]] = []
         for m in candidates:

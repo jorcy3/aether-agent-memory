@@ -18,6 +18,7 @@ class MemoryManager(Protocol):
         session_id: str | None = None,
         agent_id: str | None = None,
         user_id: str | None = None,
+        tenant_id: str | None = None,
         state: MemoryState | None = None,
         tags: list[str] | None = None,
         limit: int = 100,

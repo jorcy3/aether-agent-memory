@@ -1,5 +1,7 @@
 # aether-agent-memory
 
+P3 MVP 当前完成情况、剩余缺口和分阶段迭代计划见 [`docs/p3_mvp_status_and_roadmap.md`](docs/p3_mvp_status_and_roadmap.md)。
+
 `aether-agent-memory` 是一个基于 `src/` 布局的 Python 项目，当前仓库包含：
 
 - 核心包：`src/aether_agent_memory`
@@ -107,6 +109,40 @@ python -m pip install pytest pytest-asyncio pytest-cov mypy ruff pre-commit
 
 ```bash
 python -m pip install textual
+```
+
+## 9. P3 V1 闭环能力
+
+当前仓库已经提供可独立测试的 B1/B2/B3 V1 闭环：
+
+- B1：文本分块、Embedding、向量落地适配器、错误结构和 trace 字段；默认使用 Mock，支持可选 CPU ONNX FastEmbed。
+- B2：Agent 事件写入、Working/Episodic/Semantic 三层记忆、租户/用户/Agent 隔离、会话归档、可追溯 Context Pack，以及可选的低资源 SQLite 持久化存储。
+- B3：`0.4×频率 + 0.3×语义价值 + 0.2×近期性 + 0.1×成本` 的 V1 Heuristic，支持 Promote、Demote、Keep、Pin、Prefetch、Evict 建议、30 秒周期调度、mock executor、action log 和失败回退。
+
+无需下载真实模型即可运行闭环烟测：
+
+```powershell
+.\.venv\Scripts\python.exe examples\p3_closed_loop.py
+```
+
+启用 CPU 真实中文 Embedding：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[b1-real]"
+.\.venv\Scripts\python.exe examples\p3_closed_loop.py --real-embedding
+```
+
+默认模型为 `BAAI/bge-small-zh-v1.5`。第一次运行会下载模型文件；该路径用于本地开发和准真实联调，不代表已经达到合同中的 4K QPS Sidecar 验收指标。
+
+需要让 B2 记忆跨进程保留时，可让三个 manager 共享同一个存储实例：
+
+```python
+from aether_agent_memory import SQLiteMemoryStore
+
+store = SQLiteMemoryStore("data/aether-memory.db")
+working = MockWorkingMemoryManager(store=store)
+episodic = MockEpisodicMemoryManager(embedder=embedder, store=store)
+semantic = MockSemanticMemoryManager(embedder=embedder, store=store)
 ```
 
 ## 5. 如何运行

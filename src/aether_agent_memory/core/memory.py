@@ -20,6 +20,12 @@ class Memory(BaseModel):
     session_id: str
     agent_id: str
     user_id: str | None = None
+    tenant_id: str | None = None
+    task_id: str | None = None
+    request_id: str | None = None
+    trace_id: str | None = None
+    source_id: str | None = None
+    object_id: str | None = None
     content: str
     embedding: list[float] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

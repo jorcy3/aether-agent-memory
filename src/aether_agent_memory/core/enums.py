@@ -19,6 +19,8 @@ class SourceType(StrEnum):
     AGENT = "agent"
     SYSTEM = "system"
     TOOL = "tool"
+    RAG = "rag"
+    DOCUMENT = "document"
     DISTILLED = "distilled"
 
 

@@ -18,6 +18,16 @@ max_candidates = 100
 [decay]
 half_life_hours = 168.0 # 7 天
 
+[b1]
+model_name = "BAAI/bge-small-zh-v1.5"
+chunk_max_chars = 1200
+chunk_overlap_chars = 120
+
+[b3]
+interval_seconds = 30.0
+promote_threshold = 0.72
+demote_threshold = 0.28
+
 [endpoints]
 b1_grpc = "localhost:50051"
 p2_grpc = "localhost:50052"

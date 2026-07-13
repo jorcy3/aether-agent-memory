@@ -4,7 +4,13 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 
 from aether_agent_memory import (
+    EmbeddingPipeline,
+    HeuristicPolicy,
+    HeuristicPolicyConfig,
+    HeuristicScheduler,
+    InMemoryVectorSink,
     Memory,
+    MemoryService,
     MockContextPackBuilder,
     MockEmbeddingClient,
     MockEpisodicMemoryManager,
@@ -14,6 +20,7 @@ from aether_agent_memory import (
     MockWorkingMemoryManager,
     Settings,
     StorageTier,
+    TextChunker,
 )
 
 SCORE_FLOOR = 0.5
@@ -89,6 +96,10 @@ class DemoEnv:
     semantic: MockSemanticMemoryManager = field(init=False)
     builder: MockContextPackBuilder = field(init=False)
     emitter: MockSignalEmitter = field(default_factory=MockSignalEmitter)
+    vector_sink: InMemoryVectorSink = field(default_factory=InMemoryVectorSink)
+    b1_pipeline: EmbeddingPipeline = field(init=False)
+    b2_service: MemoryService = field(init=False)
+    b3_scheduler: HeuristicScheduler = field(init=False)
 
     def __post_init__(self) -> None:
         self.working = MockWorkingMemoryManager(
@@ -102,4 +113,28 @@ class DemoEnv:
             working=self.working,
             episodic=self.episodic,
             semantic=self.semantic,
+        )
+        self.b1_pipeline = EmbeddingPipeline(
+            embedder=self.embedder,
+            sink=self.vector_sink,
+            chunker=TextChunker(
+                max_chars=self.settings.b1_chunk_max_chars,
+                overlap_chars=self.settings.b1_chunk_overlap_chars,
+            ),
+            model_name="mock-shake256-32",
+        )
+        self.b2_service = MemoryService(
+            working=self.working,
+            episodic=self.episodic,
+            semantic=self.semantic,
+            builder=self.builder,
+            emitter=self.emitter,
+        )
+        self.b3_scheduler = HeuristicScheduler(
+            policy=HeuristicPolicy(
+                HeuristicPolicyConfig(
+                    promote_threshold=self.settings.b3_promote_threshold,
+                    demote_threshold=self.settings.b3_demote_threshold,
+                )
+            )
         )

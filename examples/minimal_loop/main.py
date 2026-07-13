@@ -21,7 +21,7 @@ if find_spec("textual") is None:
     )
     raise SystemExit(1)
 
-from tui_app import P3DataflowApp
+from tui_app import P3DataflowApp  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
