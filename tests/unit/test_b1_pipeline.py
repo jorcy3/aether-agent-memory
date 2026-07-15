@@ -53,6 +53,29 @@ async def test_pipeline_fail_open_returns_structured_error() -> None:
 
 
 @pytest.mark.unit
+async def test_pipeline_uses_explicit_chunk_id_for_prechunked_text() -> None:
+    sink = InMemoryVectorSink()
+    pipeline = EmbeddingPipeline(
+        embedder=MockEmbeddingClient(dim=8),
+        sink=sink,
+    )
+
+    result = await pipeline.process(
+        EmbeddingRequest(
+            text="pre-chunked text",
+            source_type=SourceType.DOCUMENT,
+            object_id="object-v3",
+            metadata={"chunk_id": "chunk-007"},
+        )
+    )
+
+    assert result.records[0].object_id == "object-v3"
+    assert result.records[0].chunk_id == "chunk-007:0000"
+    assert await sink.delete_by_object_id("object-v3") == 1
+    assert sink.records == []
+
+
+@pytest.mark.unit
 def test_chunker_rejects_invalid_overlap() -> None:
     with pytest.raises(ValueError):
         TextChunker(max_chars=100, overlap_chars=100)

@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from mock_services import (
+from examples.minimal_loop.mock_services import (
     DemoEnv,
+    DemoObjectVersion,
     episodic_detail_rows,
     memory_table_rows,
     normalize_score,
@@ -27,6 +28,7 @@ from aether_agent_memory import (
     EmbeddingRequest,
     Memory,
     MemorySignal,
+    MemoryState,
     MemoryType,
     SchedulableObject,
     ScheduleRequest,
@@ -40,7 +42,9 @@ AGENT_ID = "agent-duty-01"
 USER_ID = "user-duty-chief"
 SESSION_1 = "sess-duty-001"
 SESSION_2 = "sess-duty-002"
-MANUAL_SOURCE_ID = "doc-flood-manual-v3"
+MANUAL_SOURCE_ID = "doc-flood-manual"
+MANUAL_OBJECT_V3 = "object-flood-manual-v3"
+MANUAL_OBJECT_V4 = "object-flood-manual-v4"
 
 
 def _make_table(headers: list[str], rows: list[list[str]], *, title: str | None = None) -> Table:
@@ -101,6 +105,8 @@ class P3DataflowApp(App[None]):
         self.env = DemoEnv()
         self._advance: asyncio.Event = asyncio.Event()
         self.step_delay = step_delay
+        self.completed_scenarios: list[str] = []
+        self.filtered_object_ids: list[str] = []
 
     async def _step(self) -> None:
         if self.step_delay > 0:
@@ -231,13 +237,16 @@ class P3DataflowApp(App[None]):
     async def run_scenario(self) -> None:
         try:
             await self.scenario_1()
-            await self.wait_for_enter("按 Enter 进入“任务执行 → Working/Episodic 流转”")
+            await self.wait_for_enter("按 Enter 进入“用户查询 → Context Pack 构建”")
             self.system_log().clear()
             await self.scenario_2()
-            await self.wait_for_enter("按 Enter 进入“新会话召回 → B3 插入调度”")
+            await self.wait_for_enter("按 Enter 进入“记忆写入 → 归档与调度”")
             self.system_log().clear()
             await self.scenario_3()
-            await self.wait_for_enter("按 Enter 查看“三个场景总结”")
+            await self.wait_for_enter("按 Enter 进入“对象更新 → 版本状态同步”")
+            self.system_log().clear()
+            await self.scenario_4()
+            await self.wait_for_enter("按 Enter 查看“四个场景总结”")
             self.system_log().clear()
             self.user_log().clear()
             await self.summary()
@@ -264,6 +273,25 @@ class P3DataflowApp(App[None]):
             "用户显式指定的值班手册属于权威依据，后续回答应优先引用。",
         ]
 
+        raw_ref = await self.env.storage.put(
+            "objects/flood-manual/v3.txt",
+            "\n".join(chunks).encode("utf-8"),
+        )
+        object_version = DemoObjectVersion(
+            object_id=MANUAL_OBJECT_V3,
+            source_id=MANUAL_SOURCE_ID,
+            version_id="v3",
+            raw_ref=raw_ref.object_key,
+            trace_id="trace-manual-upload-v3",
+        )
+        self.env.object_versions[MANUAL_OBJECT_V3] = object_version
+        self.module_log(
+            "B2",
+            f"P2-E2 保存原始对象 object_id={MANUAL_OBJECT_V3} / version=v3 / "
+            f"raw_ref={raw_ref.object_key}",
+        )
+        await self._step()
+
         self.module_log("B1", f"接收 source_id={MANUAL_SOURCE_ID}，识别为需语义化的权威文档")
         await self._step()
 
@@ -275,15 +303,19 @@ class P3DataflowApp(App[None]):
                     text=chunk,
                     source_type=SourceType.DOCUMENT,
                     source_id=MANUAL_SOURCE_ID,
-                    object_id=chunk_id,
-                    metadata={"chunk_id": chunk_id},
+                    object_id=MANUAL_OBJECT_V3,
+                    trace_id=object_version.trace_id,
+                    metadata={"chunk_id": chunk_id, "version_id": "v3"},
                 )
             )
             if not embedding_result.records:
                 raise RuntimeError(embedding_result.error_message or "B1 embedding failed")
             vector = embedding_result.records[0].vector
+            vector_id = embedding_result.records[0].chunk_id
             ref = await self.env.storage.put(f"manual/{chunk_id}", chunk.encode("utf-8"))
             chunk_rows.append([chunk_id, truncate(chunk, 24), len(vector), ref.object_key])
+            object_version.chunk_ids.append(chunk_id)
+            object_version.vector_ids.append(vector_id)
             self.module_log(
                 "B1",
                 f"切分 {chunk_id}，绑定 source_id/object_key，"
@@ -303,8 +335,15 @@ class P3DataflowApp(App[None]):
                 user_id=USER_ID,
                 content=chunk,
                 source=SourceType.DISTILLED,
+                source_id=MANUAL_SOURCE_ID,
+                object_id=MANUAL_OBJECT_V3,
+                trace_id=object_version.trace_id,
                 tags=["manual", "rule"],
-                metadata={"source_id": MANUAL_SOURCE_ID},
+                metadata={
+                    "source_id": MANUAL_SOURCE_ID,
+                    "version_id": "v3",
+                    "raw_ref": raw_ref.object_key,
+                },
             )
             await self.env.semantic.write(mem)
             semantic_items.append(mem)
@@ -369,10 +408,11 @@ class P3DataflowApp(App[None]):
                 memory_table_rows(semantic_items),
             )
         )
+        self.completed_scenarios.append("document_upload")
 
-    async def scenario_2(self) -> None:
-        self.set_stage("场景 2 · 任务执行 → B2 归档 → B3 升温")
-        self.system_section("场景 2 · 会话内执行、归档与升温")
+    async def scenario_3(self) -> None:
+        self.set_stage("场景 3 · 记忆写入 → B2 归档 → B3 升温")
+        self.system_section("场景 3 · 对话、工具、归档与长期记忆维护")
 
         turns = [
             (
@@ -502,25 +542,26 @@ class P3DataflowApp(App[None]):
                 episodic_detail_rows(archived),
             )
         )
+        self.completed_scenarios.append("memory_maintenance")
 
-    async def scenario_3(self) -> None:
-        self.set_stage("场景 3 · 新会话召回 → B2 联合召回 → B3 回流")
-        self.system_section("场景 3 · 联合召回、调度回流与应答")
+    async def scenario_2(self) -> None:
+        self.set_stage("场景 2 · 用户查询 → B2 Context Pack → Agent 应答")
+        self.system_section("场景 2 · 查询向量化、联合召回与证据组装")
 
-        self.user_write("上次西城站那次为什么建议三级响应？给我引用依据。", who="user")
+        self.user_write("西城站一小时雨量达到 58mm 时应进入什么响应？请给出手册依据。", who="user")
         await self._step()
 
         request = ContextRequest(
             session_id=SESSION_2,
             agent_id=AGENT_ID,
             user_id=USER_ID,
-            query="上次西城站为什么建议三级响应，请给我引用依据",
+            query="西城站一小时雨量达到 58mm 时应进入什么响应，请给出手册依据",
             memory_types=[MemoryType.EPISODIC, MemoryType.SEMANTIC],
             max_tokens=256,
             max_candidates=8,
         )
 
-        self.module_log("B2", "收到新会话查询，开始构建 ContextRequest，并准备联合召回")
+        self.module_log("B2", "收到用户查询，开始构建 ContextRequest，并准备联合召回")
         await self._step()
         self.module_log("B1", "对当前查询做向量化，供 Episodic / Semantic 联合召回")
         query_vec = await self.env.embedder.embed_one(request.query)
@@ -599,7 +640,7 @@ class P3DataflowApp(App[None]):
             )
             await self._step()
 
-        pack = await self.env.builder.build(request)
+        pack = await self.env.b2_service.before_inference(request)
         self.system_write(
             f"[bold]Context Pack[/bold] 入选={len(pack.memories)}  "
             f"tokens={pack.total_tokens}/{pack.budget_tokens}"
@@ -623,17 +664,206 @@ class P3DataflowApp(App[None]):
         self.module_log("B2", "assembled_text 已返回给 Agent，开始生成带引用依据的最终回复")
         await self._step()
         self.user_write(
-            "根据你上传的《汛期值班手册》和上次任务记录，西城站一小时雨量达到 58mm，"
-            "已经超过“50mm 进入三级响应”的阈值，因此建议三级响应，并对西城片区提前布防。",
+            "根据你上传的《汛期值班手册》v3，西城站一小时雨量达到 58mm，"
+            "已经超过“50mm 进入三级响应”的阈值，因此建议进入三级响应。",
             who="agent",
         )
+        self.completed_scenarios.append("user_query")
+
+    async def scenario_4(self) -> None:
+        self.set_stage("场景 4 · 对象更新 → 版本同步 → 旧数据隔离")
+        self.system_section("场景 4 · 对象更新、向量替换与状态传播")
+
+        self.user_write(
+            "《汛期值班手册》发布了 v4：三级响应阈值改为一小时 55mm。"
+            "请替换旧版本，后续不能再引用 v3。",
+            who="user",
+        )
+        await self._step()
+
+        old_object = self.env.object_versions.get(MANUAL_OBJECT_V3)
+        if old_object is None:
+            raise RuntimeError("scenario 4 requires the v3 object created by scenario 1")
+
+        v4_chunks = [
+            "一小时雨量达到 55mm 时，建议进入三级响应。",
+            "值班响应必须引用当前 active 版本手册，superseded 版本不得进入 Context Pack。",
+        ]
+        v4_trace_id = "trace-manual-update-v4"
+        new_raw_ref = await self.env.storage.put(
+            "objects/flood-manual/v4.txt",
+            "\n".join(v4_chunks).encode("utf-8"),
+        )
+        new_object = DemoObjectVersion(
+            object_id=MANUAL_OBJECT_V4,
+            source_id=MANUAL_SOURCE_ID,
+            version_id="v4",
+            raw_ref=new_raw_ref.object_key,
+            supersedes=MANUAL_OBJECT_V3,
+            trace_id=v4_trace_id,
+        )
+        self.env.object_versions[MANUAL_OBJECT_V4] = new_object
+        old_object.status = "superseded"
+        self.module_log(
+            "B2",
+            f"P2-E2 写入 object_id={MANUAL_OBJECT_V4} / version=v4，并将 "
+            f"{MANUAL_OBJECT_V3} 标记为 superseded",
+        )
+        await self._step()
+
+        old_memories = await self.env.semantic.query(
+            agent_id=AGENT_ID,
+            user_id=USER_ID,
+            state=MemoryState.ACTIVE,
+            tags=["manual"],
+        )
+        superseded_count = 0
+        for memory in old_memories:
+            if memory.object_id != MANUAL_OBJECT_V3:
+                continue
+            await self.env.semantic.update_state(memory.id, MemoryState.SUPERSEDED)
+            superseded_count += 1
+        removed_vectors = await self.env.vector_sink.delete_by_object_id(MANUAL_OBJECT_V3)
+        self.module_log(
+            "B2",
+            f"状态传播到 B2/P2-E1：superseded memories={superseded_count}，"
+            f"旧 vector records removed={removed_vectors}",
+        )
+        await self._step()
+
+        new_memories: list[Memory] = []
+        for index, chunk in enumerate(v4_chunks, start=1):
+            chunk_id = f"chunk-manual-v4-{index:03d}"
+            embedding_result = await self.env.b1_pipeline.process(
+                EmbeddingRequest(
+                    text=chunk,
+                    source_type=SourceType.DOCUMENT,
+                    source_id=MANUAL_SOURCE_ID,
+                    object_id=MANUAL_OBJECT_V4,
+                    trace_id=v4_trace_id,
+                    metadata={"chunk_id": chunk_id, "version_id": "v4"},
+                )
+            )
+            if not embedding_result.records:
+                raise RuntimeError(embedding_result.error_message or "v4 embedding failed")
+            record = embedding_result.records[0]
+            new_object.chunk_ids.append(chunk_id)
+            new_object.vector_ids.append(record.chunk_id)
+            memory = Memory(
+                type=MemoryType.SEMANTIC,
+                session_id=SESSION_2,
+                agent_id=AGENT_ID,
+                user_id=USER_ID,
+                content=chunk,
+                source=SourceType.DISTILLED,
+                source_id=MANUAL_SOURCE_ID,
+                object_id=MANUAL_OBJECT_V4,
+                trace_id=v4_trace_id,
+                tags=["manual", "rule", "active-version"],
+                metadata={
+                    "version_id": "v4",
+                    "raw_ref": new_raw_ref.object_key,
+                    "supersedes": MANUAL_OBJECT_V3,
+                },
+                p2_ref=new_raw_ref,
+            )
+            await self.env.semantic.write(memory)
+            new_memories.append(memory)
+            self.module_log(
+                "B1",
+                f"v4 chunk={chunk_id} 完成 embedding，绑定 object/vector/source/trace 映射",
+            )
+            await self._step()
+
+        self.module_log(
+            "B3",
+            "构建调度候选时过滤 status=superseded 的 v3 对象；旧版本不进入 Promote/Prefetch",
+        )
+        old_action_count = sum(
+            entry.action.object_id == MANUAL_OBJECT_V3
+            for entry in self.env.b3_scheduler.action_log.entries
+        )
+        self.filtered_object_ids.append(MANUAL_OBJECT_V3)
+        await self._step()
+        entry = await self.schedule_memory(
+            new_memories[0],
+            access_frequency=0.8,
+            recency_score=1.0,
+            hit_rate=0.8,
+            semantic_relevance=1.0,
+            task_relevance=0.95,
+            business_priority=1.0,
+            pinned=True,
+        )
+        self.module_log(
+            "B3",
+            f"仅对 active v4 输出 {entry.action.action_type.value.upper()}，"
+            f"status={entry.feedback.execute_status.value}，action_id={entry.action.action_id[:8]}",
+        )
+        current_old_action_count = sum(
+            action_entry.action.object_id == MANUAL_OBJECT_V3
+            for action_entry in self.env.b3_scheduler.action_log.entries
+        )
+        if current_old_action_count != old_action_count:
+            raise RuntimeError("superseded v3 object was scheduled after status propagation")
+        await self._step()
+
+        verify_request = ContextRequest(
+            session_id="sess-version-check-001",
+            agent_id=AGENT_ID,
+            user_id=USER_ID,
+            query="最新手册规定的三级响应雨量阈值是多少",
+            memory_types=[MemoryType.SEMANTIC],
+            max_tokens=128,
+            max_candidates=6,
+            trace_id=v4_trace_id,
+        )
+        pack = await self.env.b2_service.before_inference(verify_request)
+        if any(memory.object_id == MANUAL_OBJECT_V3 for memory in pack.memories):
+            raise RuntimeError("superseded v3 memory leaked into Context Pack")
+
+        self.system_write(
+            _make_table(
+                ["object_id", "version", "status", "chunks", "vectors", "raw_ref"],
+                [
+                    [
+                        old_object.object_id,
+                        old_object.version_id,
+                        old_object.status,
+                        str(len(old_object.chunk_ids)),
+                        str(len(old_object.vector_ids)),
+                        old_object.raw_ref,
+                    ],
+                    [
+                        new_object.object_id,
+                        new_object.version_id,
+                        new_object.status,
+                        str(len(new_object.chunk_ids)),
+                        str(len(new_object.vector_ids)),
+                        new_object.raw_ref,
+                    ],
+                ],
+                title="对象版本与状态同步结果",
+            )
+        )
+        self.system_write(
+            f"[bold green]隔离验证通过[/bold green]：Context Pack 仅包含 active v4，"
+            f"memory_refs={len(pack.memory_refs)}，trace_id={pack.trace_id}"
+        )
+        await self._step()
+        self.user_write(
+            "更新完成。v3 已标记为 superseded，旧向量和旧记忆不会再进入召回或调度；"
+            "当前三级响应阈值按 v4 执行，为一小时 55mm。",
+            who="agent",
+        )
+        self.completed_scenarios.append("object_update")
 
     async def summary(self) -> None:
-        self.set_stage("场景总结 · 三个场景的调度路径与动作命中")
+        self.set_stage("场景总结 · 四个典型应用场景的数据流与动作命中")
         self.system_section("场景总结 · 模块调度与动作命中")
 
         self.user_write(
-            "三个场景已经演示完，下面汇总每个场景主要调度了哪些模块，以及命中了哪些动作。",
+            "四个典型应用场景已经演示完，下面按文档基准汇总每条数据流和命中动作。",
             who="agent",
         )
         await self._step()
@@ -643,29 +873,37 @@ class P3DataflowApp(App[None]):
                 ["场景", "主要调度模块", "命中动作"],
                 [
                     [
-                        "场景 1\n手册入库",
-                        "B1 → B2 → B3 → B2",
-                        "B1：文档识别、chunk 切分、embedding 写入 P2-E1\n"
-                        "B2：写入 Semantic / Episodic、输出 authoritative memory signal\n"
+                        "场景 1\n文档上传",
+                        "P4 → P2-E2 → B1 → P2-E1 → B2 → B3",
+                        "P2-E2：保存原文对象和版本元数据\n"
+                        "B1：chunk 切分、embedding、object/chunk/vector 映射\n"
+                        "B2：写入 Semantic / Episodic 与来源引用\n"
                         "B3：命中 Pin / Keep\n"
-                        "B2：接收调度结果并记录热层优先使用策略",
+                        "结果：形成可追溯、可召回、可调度的文档资源",
                     ],
                     [
-                        "场景 2\n任务执行归档",
+                        "场景 2\n用户查询",
                         "B2 → B1 → B2 → B3 → B2",
-                        "B2：写入 Working、迁入 Episodic、输出 PROMOTION_HINT signal\n"
-                        "B1：工具结果向量化、归档向量化\n"
-                        "B3：命中 Promote\n"
-                        "B2：回写高热证据优先级，提高后续 Context Pack 排序",
-                    ],
-                    [
-                        "场景 3\n新会话召回",
-                        "B2 → B1 → B2 → B3 → B2",
-                        "B2：构建 ContextRequest、联合召回 Episodic / Semantic、"
-                        "输出 ACCESS signal\n"
                         "B1：查询向量化\n"
+                        "B2：联合召回、身份过滤、Context Pack 与证据引用\n"
                         "B3：命中 Keep / Prefetch\n"
-                        "B2：恢复主流程，完成 Context Pack 组装与引用排序",
+                        "结果：Agent 获得受 token budget 约束的可追溯上下文",
+                    ],
+                    [
+                        "场景 3\n记忆维护",
+                        "B2 → B1 → B2 → B3 → B2",
+                        "B2：对话/工具写入 Working，阶段结束归档 Episodic\n"
+                        "B1：工具结果与归档记忆向量化\n"
+                        "B3：命中 Promote\n"
+                        "结果：任务过程沉淀为跨会话可复用证据",
+                    ],
+                    [
+                        "场景 4\n对象更新",
+                        "P4 → P2-E2/E1 → B1 → B2 → B3",
+                        "P2-E2：写入 v4，并将 v3 标记 superseded\n"
+                        "B1/P2-E1：替换旧向量并建立新版本映射\n"
+                        "B2：旧记忆退出召回；Context Pack 仅返回 active v4\n"
+                        "B3：旧对象不进入 Promote/Prefetch，仅保护 active v4",
                     ],
                 ],
             )
@@ -673,9 +911,10 @@ class P3DataflowApp(App[None]):
         await self._step()
 
         self.system_write("\n[bold]整体规律[/bold]")
-        self.system_write("1. 场景 1 体现“先语义化，再记忆化，再调度化”的入库链路。")
-        self.system_write("2. 场景 2 体现会话内任务如何沉淀为可复用证据，并触发升温。")
-        self.system_write("3. 场景 3 体现召回过程中 B2 中途调用 B3，再回到 B2 完成上下文组装。")
+        self.system_write("1. 文档上传负责建立 object → chunk → vector → memory 的来源链。")
+        self.system_write("2. 用户查询负责把向量命中解析为安全、可追溯的 Context Pack。")
+        self.system_write("3. 记忆维护负责 Working → Episodic/Semantic 生命周期和调度信号。")
+        self.system_write("4. 对象更新负责版本、状态和删除隔离，防止旧数据继续召回或调度。")
 
 
 # Backward-compatible aliases for older imports.

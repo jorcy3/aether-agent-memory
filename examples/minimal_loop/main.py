@@ -8,6 +8,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_PATH = PROJECT_ROOT / "src"
 
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
@@ -21,7 +23,7 @@ if find_spec("textual") is None:
     )
     raise SystemExit(1)
 
-from tui_app import P3DataflowApp  # noqa: E402
+from examples.minimal_loop.tui_app import P3DataflowApp  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:

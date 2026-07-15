@@ -1,6 +1,6 @@
 # aether-agent-memory
 
-P3 MVP 当前完成情况、剩余缺口和分阶段迭代计划见 [`docs/p3_mvp_status_and_roadmap.md`](docs/p3_mvp_status_and_roadmap.md)。
+项目组内部进展跟踪见 [`docs/p3_project_progress.md`](docs/p3_project_progress.md)；P3 MVP 技术完成情况、剩余缺口和分阶段迭代计划见 [`docs/p3_mvp_status_and_roadmap.md`](docs/p3_mvp_status_and_roadmap.md)。
 
 `aether-agent-memory` 是一个基于 `src/` 布局的 Python 项目，当前仓库包含：
 
@@ -174,6 +174,13 @@ uv run mypy src
 uv run python examples/minimal_loop/main.py
 ```
 
+TUI 按项目文档中的四条典型应用数据流依次演示：
+
+1. 文档上传 / 原始对象写入；
+2. 用户查询 / B2 Context Pack 构建；
+3. 记忆维护 / Working、Episodic、Semantic 生命周期；
+4. 对象更新 / 删除 / 版本状态同步。
+
 如果你希望演示一步一步自动推进更快一点，可以传入更短的延时：
 
 ```bash
@@ -207,7 +214,7 @@ make test
 
 ```bash
 uv sync --group demo
-uv run python examples/minimal_loop/main.py --step-delay 0
+uv run python examples/minimal_loop/main.py
 ```
 
 ### 想完整参与开发

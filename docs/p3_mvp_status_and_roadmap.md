@@ -74,10 +74,10 @@ flowchart LR
 ### 2.4 示例、配置与测试
 
 - 新增非交互闭环：`examples/p3_closed_loop.py`。
-- 原 Textual TUI 已接入真实 B1 Pipeline 和 B3 Scheduler/Executor，不再只是静态说明文本。
+- Textual TUI 已接入真实 B1 Pipeline 和 B3 Scheduler/Executor，并按文档基准覆盖文档上传、用户查询、记忆维护、对象更新四条典型应用数据流。
 - 增加 B1 模型与分块配置、B3 周期与阈值配置。
 - 增加 B1、B2、B3、SQLite 及完整闭环测试。
-- 当前质量门：106 项测试通过，ruff 通过，mypy 通过。
+- 当前质量门：108 项测试通过，mypy 与 compileall 通过；基线提交的 ruff 已通过，2026-07-15 本机因应用控制策略阻止 `ruff.exe` 启动，待 CI 或策略恢复后复验本次增量。
 
 ## 3. 如何直接运行
 
@@ -101,7 +101,7 @@ flowchart LR
 ### 3.3 交互式 TUI
 
 ```powershell
-.\.venv\Scripts\python.exe examples\minimal_loop\main.py --step-delay 0
+.\.venv\Scripts\python.exe examples\minimal_loop\main.py
 ```
 
 ### 3.4 质量检查

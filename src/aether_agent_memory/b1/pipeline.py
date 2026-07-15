@@ -24,6 +24,16 @@ class InMemoryVectorSink:
         for record in records:
             self._records[record.chunk_id] = record
 
+    async def delete_by_object_id(self, object_id: str) -> int:
+        chunk_ids = [
+            chunk_id
+            for chunk_id, record in self._records.items()
+            if record.object_id == object_id
+        ]
+        for chunk_id in chunk_ids:
+            del self._records[chunk_id]
+        return len(chunk_ids)
+
     @property
     def records(self) -> list[EmbeddingRecord]:
         return list(self._records.values())
@@ -49,7 +59,12 @@ class TextChunker:
             or request.object_id
             or request.request_id
         )
-        chunk_key = request.object_id or request.memory_id or request.doc_id or source_id
+        explicit_chunk_id = request.metadata.get("chunk_id")
+        chunk_key = (
+            str(explicit_chunk_id)
+            if explicit_chunk_id is not None
+            else request.object_id or request.memory_id or request.doc_id or source_id
+        )
         chunks: list[TextChunk] = []
         start = 0
         index = 0

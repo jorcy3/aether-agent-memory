@@ -85,6 +85,19 @@ def episodic_detail_rows(memories: list[Memory]) -> list[list[str]]:
 
 
 @dataclass
+class DemoObjectVersion:
+    object_id: str
+    source_id: str
+    version_id: str
+    raw_ref: str
+    status: str = "active"
+    chunk_ids: list[str] = field(default_factory=list)
+    vector_ids: list[str] = field(default_factory=list)
+    supersedes: str | None = None
+    trace_id: str = ""
+
+
+@dataclass
 class DemoEnv:
     settings: Settings = field(default_factory=Settings)
     embedder: MockEmbeddingClient = field(default_factory=lambda: MockEmbeddingClient(dim=32))
@@ -97,6 +110,7 @@ class DemoEnv:
     builder: MockContextPackBuilder = field(init=False)
     emitter: MockSignalEmitter = field(default_factory=MockSignalEmitter)
     vector_sink: InMemoryVectorSink = field(default_factory=InMemoryVectorSink)
+    object_versions: dict[str, DemoObjectVersion] = field(default_factory=dict)
     b1_pipeline: EmbeddingPipeline = field(init=False)
     b2_service: MemoryService = field(init=False)
     b3_scheduler: HeuristicScheduler = field(init=False)
